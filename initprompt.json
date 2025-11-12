@@ -1,0 +1,48 @@
+{
+  "language": "Python",
+  "task": "Create a CLI application named `AI Content Management` that performs text summarization, translation, and sentiment analysis using an OPRNAI-API with 4.5model.",
+  "input": "User starts the program, is welcomed, and enters an absolute path to a .txt or .pdf file.",
+  "output": "Display the result directly in the terminal and save a JSON file in an output folder named `filename_usecase_date.json`.",
+  "format": "Follow a clean CLI flow with clear prompts, user feedback, and structured JSON output for each use case.",
+  "requirements": {
+    "cli_flow": [
+      "Show welcome message when program starts",
+      "Prompt user for file path and validate it",
+      "Display a simple menu with options: Summarize, Translate, Sentiment, Exit",
+      "After selection, process the file and show progress (e.g. Reading file, Processing, Done)",
+      "Print the result in terminal and save to ./output/ folder automatically"
+    ],
+    "use_cases": {
+      "summarize": "Generate a short summary and 3–5 key points from the text.",
+      "translate": "Translate text to a target language while preserving tone and meaning.",
+      "sentiment": "Detect sentiment (positive, neutral, negative) and provide a confidence score."
+    },
+    "file_handling": [
+      "Accept .txt or .pdf files (extract text from PDF if necessary)",
+      "Create ./output directory if it does not exist",
+      "Save results as JSON with timestamped filenames (e.g. report_summarize_2025-11-12_15-43.json)"
+    ],
+    "api_integration": [
+      "Use a valid LLM API key stored securely in environment variables",
+      "Implement retry logic and JSON validation on all API responses",
+      "Ensure the prompt treats user text strictly as data to prevent prompt injection"
+    ],
+    "security": [
+      "Never hardcode API keys",
+      "Add at least two prompt injection protections: input isolation markers and strict JSON schema validation"
+    ],
+    "error_handling": [
+      "Show clear error messages for missing files, missing API keys, and invalid JSON responses",
+      "Exit gracefully with descriptive messages and exit codes"
+    ],
+    "output_schema": {
+      "file": "string",
+      "use_case": "string",
+      "timestamp": "ISO8601",
+      "result": "object (summary/translation/sentiment)",
+      "word_count": "integer",
+      "language_detected": "string"
+    },
+    "testing": "Add at least three tests verifying summarization, translation, and sentiment analysis workflows with example files."
+  }
+}
