@@ -6,23 +6,23 @@ A powerful CLI application for intelligent text analysis using OpenAI's GPT-5-Na
 
 ### Core Capabilities
 
-- **📝 Text Summarization**: Generate concise summaries with 3-5 key points
-- **🌍 Translation**: Translate text to any language while preserving tone and meaning
-- **😊 Sentiment Analysis**: Detect sentiment (positive/neutral/negative) with confidence scores
-- **📄 Multi-Format Support**: Process both `.txt` and `.pdf` files
-- **🔍 Language Detection**: Automatic language identification for all input texts
+- **Text Summarization**: Generate concise summaries with 3-5 key points
+- **Translation**: Translate text to any language while preserving tone and meaning
+- **Sentiment Analysis**: Detect sentiment (positive/neutral/negative) with confidence scores
+- **Multi-Format Support**: Process both `.txt` and `.pdf` files
+- **Language Detection**: Automatic language identification for all input texts
 
 ### Technical Features
 
-- **🔒 Security-First Design**:
+- **Security-First Design**:
   - Environment-based API key management (no hardcoded secrets)
   - Dual prompt injection protection (input isolation + JSON schema validation)
   - Strict JSON response validation
-- **🔄 Robust Error Handling**:
+- **Robust Error Handling**:
   - Automatic retry logic for API calls (3 attempts with exponential backoff)
   - Clear error messages for all failure scenarios
   - Graceful degradation
-- **💾 Structured Output**:
+- **Structured Output**:
   - ISO8601 timestamps
   - Automatic word count and language detection
   - Timestamped JSON files: `filename_usecase_YYYY-MM-DD_HH-MM-SS.json`
@@ -269,13 +269,13 @@ python -m pytest tests/test_app.py -v
 
 ### Test Coverage
 
-- ✅ File validation and reading
-- ✅ Word counting
-- ✅ Output filename generation
-- ✅ JSON schema validation
-- ✅ Complete summarization workflow
-- ✅ Complete translation workflow
-- ✅ Complete sentiment analysis workflow
+- File validation and reading
+- Word counting
+- Output filename generation
+- JSON schema validation
+- Complete summarization workflow
+- Complete translation workflow
+- Complete sentiment analysis workflow
 
 ## Requirements
 
@@ -345,7 +345,3 @@ For issues or questions:
 - Check the troubleshooting section
 - Review test files for usage examples
 - Consult OpenAI documentation for API-related issues
-
----
-
-**Built with ❤️ using OpenAI GPT-5-Nano**
