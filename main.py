@@ -1,520 +1,410 @@
 #!/usr/bin/env python3
-"""
-AI Content Management - CLI Application
+"""Interactive CLI for AI-powered document processing."""
 
-This is the main entry point for the command-line interface.
-Users interact with this file to perform text analysis tasks:
-- Summarization (summary + key points extraction)
-- Translation (to any language, preserving tone)
-- Sentiment Analysis (positive/neutral/negative with confidence)
-
-The CLI provides:
-- Colored terminal output for better UX
-- Input validation for file paths
-- Progress indicators during processing
-- Clear display of results
-- Automatic saving to timestamped JSON files
-"""
-
-import sys
 import os
+import sys
+import textwrap
 from pathlib import Path
+from typing import Callable, Dict, Optional
 
-# Add src directory to Python path
-# This allows us to import from src/ without installing the package
 sys.path.insert(0, str(Path(__file__).parent))
 
-from src.processors import TextProcessor, ProcessorError
 from src.output_manager import OutputManager, OutputManagerError
+from src.processors import ProcessorError, TextProcessor
 
 
 class Colors:
-    """
-    ANSI color codes for terminal output.
-    
-    These codes work on most Unix/Linux/Mac terminals. On Windows,
-    they work in Windows Terminal and newer command prompts.
-    
-    Usage:
-        print(f"{Colors.RED}Error message{Colors.ENDC}")
-    """
-    HEADER = '\033[95m'  # Purple/magenta
-    BLUE = '\033[94m'    # Blue
-    GREEN = '\033[92m'   # Green
-    YELLOW = '\033[93m'  # Yellow
-    RED = '\033[91m'     # Red
-    ENDC = '\033[0m'     # Reset to default color
-    BOLD = '\033[1m'     # Bold text
+    """ANSI styles used consistently throughout the interface."""
+
+    MAGENTA = "\033[95m"
+    BLUE = "\033[94m"
+    CYAN = "\033[96m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    RED = "\033[91m"
+    WHITE = "\033[97m"
+    DIM = "\033[2m"
+    BOLD = "\033[1m"
+    RESET = "\033[0m"
+    CLEAR_LINE = "\033[2K"
+
+
+class StageProgress:
+    """Display one active workflow stage and retain completed stages."""
+
+    def __init__(self, total: int):
+        self.total = total
+        self.current = 0
+        self.active: Optional[str] = None
+
+    def update(self, message: str) -> None:
+        if self.active:
+            self._complete_active()
+
+        self.current += 1
+        self.active = message
+        print(
+            f"{Colors.YELLOW}● [{self.current}/{self.total}] "
+            f"{message}...{Colors.RESET}",
+            end="",
+            flush=True,
+        )
+
+    def finish(self) -> None:
+        if self.active:
+            self._complete_active()
+
+    def fail(self) -> None:
+        if not self.active:
+            return
+
+        print(
+            f"\r{Colors.CLEAR_LINE}{Colors.RED}✗ [{self.current}/{self.total}] "
+            f"{self.active} failed{Colors.RESET}"
+        )
+        self.active = None
+
+    def _complete_active(self) -> None:
+        print(
+            f"\r{Colors.CLEAR_LINE}{Colors.GREEN}✓ [{self.current}/{self.total}] "
+            f"{self.active}{Colors.RESET}"
+        )
+        self.active = None
 
 
 class CLI:
-    """
-    Command-line interface for AI Content Management.
-    
-    This class handles all user interaction:
-    - Displaying menus and prompts
-    - Validating user input
-    - Showing progress and results
-    - Error handling and recovery
-    
-    The CLI uses colored output to make the interface more user-friendly
-    and guide users through each workflow.
-    """
-    
+    """Demo-friendly command-line interface."""
+
+    WIDTH = 76
+    ACTIONS: Dict[str, Dict[str, str]] = {
+        "1": {
+            "key": "summarize",
+            "name": "Summarize",
+            "description": "Create a concise summary and key points",
+        },
+        "2": {
+            "key": "translate",
+            "name": "Translate",
+            "description": "Translate content while preserving meaning and tone",
+        },
+        "3": {
+            "key": "sentiment",
+            "name": "Sentiment analysis",
+            "description": "Identify sentiment, confidence, and reasoning",
+        },
+    }
+
     def __init__(self):
-        """
-        Initialize the CLI.
-        
-        The processor is initialized lazily (on first use) to avoid
-        failing early if the API key is missing. This allows us to
-        show a better error message when the user actually tries to
-        perform an operation.
-        """
-        self.processor = None
-    
-    def print_welcome(self):
-        """
-        Display welcome banner when application starts.
-        
-        This provides branding and shows users what the application does.
-        """
-        print("\n" + "=" * 60)
-        print(f"{Colors.HEADER}{Colors.BOLD}  AI Content Management System{Colors.ENDC}")
-        print("=" * 60)
-        print(f"{Colors.BLUE}  Text Analysis powered by OpenAI GPT-5-Nano{Colors.ENDC}")
-        print("=" * 60 + "\n")
-    
-    def print_menu(self):
-        """
-        Display the main menu with available actions.
-        
-        Uses numbered options for easy selection and color-coding
-        to make the menu visually clear.
-        """
-        print(f"\n{Colors.BOLD}Available Actions:{Colors.ENDC}")
-        print(f"  {Colors.GREEN}1.{Colors.ENDC} Summarize - Generate summary and key points")
-        print(f"  {Colors.GREEN}2.{Colors.ENDC} Translate - Translate text to another language")
-        print(f"  {Colors.GREEN}3.{Colors.ENDC} Sentiment - Analyze sentiment and tone")
-        print(f"  {Colors.GREEN}4.{Colors.ENDC} Exit\n")
-    
-    def get_file_path(self) -> str:
-        """
-        Prompt user for file path and thoroughly validate it.
-        
-        This provides a user-friendly validation loop that:
-        - Checks if file exists
-        - Verifies it's a file (not a directory)
-        - Validates file extension (.txt or .pdf only)
-        - Allows retry on errors
-        - Expands ~/ to user's home directory
-        
-        Returns:
-            Validated file path string, or None if user cancels
-            
-        User Experience:
-            - Clear error messages for each validation failure
-            - Opportunity to retry after each error
-            - Graceful exit option if they want to cancel
-        """
-        while True:
-            print(f"{Colors.BOLD}Enter file path:{Colors.ENDC}")
-            file_path = input(f"{Colors.BLUE}> {Colors.ENDC}").strip()
-            
-            # Validation 1: Not empty
-            if not file_path:
-                print(f"{Colors.RED}Error: File path cannot be empty{Colors.ENDC}")
-                continue
-            
-            # Expand ~ to user's home directory (e.g., ~/file.txt -> /home/user/file.txt)
-            # This makes it easier for users to reference files in their home directory
-            file_path = os.path.expanduser(file_path)
-            
-            # Validation 2: File exists
-            if not os.path.exists(file_path):
-                print(f"{Colors.RED}Error: File not found: {file_path}{Colors.ENDC}")
-                retry = input(f"Try again? (y/n): ").strip().lower()
-                if retry != 'y':
-                    return None  # User cancelled
-                continue
-            
-            # Validation 3: Is a file (not a directory)
-            if not os.path.isfile(file_path):
-                print(f"{Colors.RED}Error: Path is not a file: {file_path}{Colors.ENDC}")
-                retry = input(f"Try again? (y/n): ").strip().lower()
-                if retry != 'y':
-                    return None
-                continue
-            
-            # Validation 4: Supported file type
-            # Extract extension (e.g., "article.txt" -> ".txt")
-            ext = os.path.splitext(file_path)[1].lower()
-            if ext not in ['.txt', '.pdf']:
-                print(f"{Colors.RED}Error: Unsupported file type: {ext}{Colors.ENDC}")
-                print(f"{Colors.YELLOW}Supported types: .txt, .pdf{Colors.ENDC}")
-                retry = input(f"Try again? (y/n): ").strip().lower()
-                if retry != 'y':
-                    return None
-                continue
-            
-            # All validations passed!
-            return file_path
-    
+        self.processor: Optional[TextProcessor] = None
+
+    def print_welcome(self) -> None:
+        line = "═" * (self.WIDTH - 2)
+        print(f"\n{Colors.MAGENTA}╔{line}╗")
+        print(
+            f"║{Colors.BOLD}{Colors.WHITE}"
+            f"{'AI CONTENT MANAGEMENT':^{self.WIDTH - 2}}"
+            f"{Colors.RESET}{Colors.MAGENTA}║"
+        )
+        print(f"╚{line}╝{Colors.RESET}")
+        print(
+            f"{Colors.DIM}{'Turn documents into actionable insights':^{self.WIDTH}}"
+            f"{Colors.RESET}\n"
+        )
+
+    def print_menu(self) -> None:
+        self._section("CHOOSE A WORKFLOW", "INPUT")
+        for number, action in self.ACTIONS.items():
+            print(
+                f"  {Colors.CYAN}{Colors.BOLD}[{number}] {action['name']:<20}"
+                f"{Colors.RESET}{Colors.DIM}{action['description']}{Colors.RESET}"
+            )
+        print(
+            f"  {Colors.CYAN}{Colors.BOLD}[4] Exit{Colors.RESET}"
+            f"{Colors.DIM}{'':<17}Close the application{Colors.RESET}\n"
+        )
+
     def get_menu_choice(self) -> str:
-        """
-        Get and validate user's menu choice.
-        
-        Loops until valid input (1-4) is provided. This prevents crashes
-        from invalid input and guides users to valid options.
-        
-        Returns:
-            String "1", "2", "3", or "4" (validated choice)
-        """
         while True:
-            choice = input(f"{Colors.BOLD}Select option (1-4):{Colors.ENDC} ").strip()
-            if choice in ['1', '2', '3', '4']:
+            choice = input(
+                f"{Colors.BOLD}  Select an option "
+                f"{Colors.CYAN}[1-4]{Colors.RESET}{Colors.BOLD}: {Colors.RESET}"
+            ).strip()
+            if choice in {"1", "2", "3", "4"}:
                 return choice
-            # Invalid input - show error and loop again
-            print(f"{Colors.RED}Invalid choice. Please enter 1, 2, 3, or 4.{Colors.ENDC}")
-    
-    def show_progress(self, message: str):
-        """
-        Display a progress/working indicator.
-        
-        Args:
-            message: What operation is currently happening
-            
-        Visual: "⚙ Reading file..."
-        """
-        print(f"{Colors.YELLOW}⚙ {message}...{Colors.ENDC}")
-    
-    def show_success(self, message: str):
-        """
-        Display a success message with checkmark.
-        
-        Args:
-            message: What succeeded
-            
-        Visual: "✓ Processing complete"
-        """
-        print(f"{Colors.GREEN}✓ {message}{Colors.ENDC}")
-    
-    def show_error(self, message: str):
-        """
-        Display an error message with X mark.
-        
-        Args:
-            message: Error description
-            
-        Visual: "✗ Error: File not found"
-        """
-        print(f"{Colors.RED}✗ Error: {message}{Colors.ENDC}")
-    
-    def display_result(self, result: dict, use_case: str):
-        """
-        Display processing results in the terminal with nice formatting.
-        
-        This formats results differently based on the use case:
-        - Summarize: Shows summary paragraph + numbered key points
-        - Translate: Shows source→target languages + translated text
-        - Sentiment: Shows color-coded sentiment + confidence percentage + explanation
-        
-        Args:
-            result: The result dictionary from the processor (varies by use case)
-            use_case: Type of operation ('summarize', 'translate', or 'sentiment')
-            
-        Example output for sentiment:
-            ==============================================================
-            RESULTS
-            ==============================================================
-            
-            Sentiment: POSITIVE
-            Confidence: 92.50%
-            Explanation:
-            The text uses strong positive language like "excellent" and "love"
-            
-            ==============================================================
-        """
-        print("\n" + "=" * 60)
-        print(f"{Colors.HEADER}{Colors.BOLD}RESULTS{Colors.ENDC}")
-        print("=" * 60 + "\n")
-        
-        if use_case == 'summarize':
-            # Display summary paragraph
-            print(f"{Colors.BOLD}Summary:{Colors.ENDC}")
-            print(result['summary'])
-            
-            # Display key points as numbered list
-            print(f"\n{Colors.BOLD}Key Points:{Colors.ENDC}")
-            for i, point in enumerate(result['key_points'], 1):
-                print(f"  {i}. {point}")
-        
-        elif use_case == 'translate':
-            # Show translation metadata
-            print(f"{Colors.BOLD}Source Language:{Colors.ENDC} {result.get('source_language', 'N/A')}")
-            print(f"{Colors.BOLD}Target Language:{Colors.ENDC} {result['target_language']}")
-            
-            # Show the translated text
-            print(f"\n{Colors.BOLD}Translation:{Colors.ENDC}")
-            print(result['translated_text'])
-        
-        elif use_case == 'sentiment':
-            sentiment = result['sentiment']
-            confidence = result['confidence']
-            
-            # Color-code the sentiment for visual impact
-            # Green = positive, Red = negative, Yellow = neutral
-            sentiment_color = Colors.GREEN if sentiment == 'positive' else \
-                            Colors.RED if sentiment == 'negative' else Colors.YELLOW
-            
-            print(f"{Colors.BOLD}Sentiment:{Colors.ENDC} {sentiment_color}{sentiment.upper()}{Colors.ENDC}")
-            print(f"{Colors.BOLD}Confidence:{Colors.ENDC} {confidence:.2%}")  # Format as percentage (0.95 -> 95.00%)
-            print(f"{Colors.BOLD}Explanation:{Colors.ENDC}")
-            print(result['explanation'])
-        
-        print("\n" + "=" * 60 + "\n")
-    
-    def process_summarization(self, file_path: str):
-        """
-        Execute the complete summarization workflow with user feedback.
-        
-        Workflow:
-        1. Show progress indicators for each step
-        2. Call the processor to do the actual work
-        3. Display results in the terminal
-        4. Save results to JSON file
-        5. Handle any errors gracefully
-        
-        Args:
-            file_path: Path to the file to summarize
-            
-        User sees:
-            ⚙ Reading file...
-            ⚙ Detecting language...
-            ⚙ Generating summary...
-            ✓ Processing complete
-            [RESULTS DISPLAYED]
-            ⚙ Saving results...
-            ✓ Results saved to: output/file_summarize_2024-01-15_14-30-00.json
-        """
-        try:
-            # Progress feedback: Let user know what's happening
-            self.show_progress("Reading file")
-            self.show_progress("Detecting language")
-            self.show_progress("Generating summary")
-            
-            # Do the actual processing (this takes time - API calls involved)
-            result = self.processor.process_summarization(file_path)
-            
-            self.show_success("Processing complete")
-            
-            # Display the results in a formatted way
-            self.display_result(result['result'], 'summarize')
-            
-            # Save to JSON file for later reference
-            self.show_progress("Saving results")
-            output_path = OutputManager.save_from_processor_result(result)
-            self.show_success(f"Results saved to: {output_path}")
-            
-        except ProcessorError as e:
-            # Processing failed (file reading, API call, etc.)
-            self.show_error(str(e))
-        except OutputManagerError as e:
-            # Processing succeeded but saving failed
-            self.show_error(f"Failed to save output: {str(e)}")
-        except Exception as e:
-            # Unexpected error - catch-all for safety
-            self.show_error(f"Unexpected error: {str(e)}")
-    
-    def process_translation(self, file_path: str):
-        """
-        Execute the complete translation workflow with user feedback.
-        
-        Unlike summarization, this requires an additional user input:
-        the target language. We collect that first, validate it,
-        then proceed with the workflow.
-        
-        Args:
-            file_path: Path to the file to translate
-            
-        User experience:
-            1. Prompted for target language
-            2. Progress feedback during processing
-            3. Results displayed showing source→target
-            4. Results saved to JSON
-        """
-        # Get target language from user
-        print(f"\n{Colors.BOLD}Enter target language (e.g., Spanish, French, German):{Colors.ENDC}")
-        target_language = input(f"{Colors.BLUE}> {Colors.ENDC}").strip()
-        
-        # Validate input
-        if not target_language:
-            self.show_error("Target language cannot be empty")
-            return  # Abort this operation
-        
-        try:
-            # Progress feedback
-            self.show_progress("Reading file")
-            self.show_progress("Detecting source language")
-            self.show_progress(f"Translating to {target_language}")
-            
-            # Do the actual processing
-            result = self.processor.process_translation(file_path, target_language)
-            
-            self.show_success("Processing complete")
-            
-            # Display the translation
-            self.display_result(result['result'], 'translate')
-            
-            # Save to JSON file
-            self.show_progress("Saving results")
-            output_path = OutputManager.save_from_processor_result(result)
-            self.show_success(f"Results saved to: {output_path}")
-            
-        except ProcessorError as e:
-            self.show_error(str(e))
-        except OutputManagerError as e:
-            self.show_error(f"Failed to save output: {str(e)}")
-        except Exception as e:
-            self.show_error(f"Unexpected error: {str(e)}")
-    
-    def process_sentiment(self, file_path: str):
-        """
-        Execute the complete sentiment analysis workflow with user feedback.
-        
-        Workflow is similar to summarization but analyzes emotional tone
-        instead of creating a summary.
-        
-        Args:
-            file_path: Path to the file to analyze
-            
-        User sees:
-            ⚙ Reading file...
-            ⚙ Detecting language...
-            ⚙ Analyzing sentiment...
-            ✓ Processing complete
-            [SENTIMENT RESULTS WITH COLOR-CODED OUTPUT]
-            ⚙ Saving results...
-            ✓ Results saved to: output/file_sentiment_2024-01-15_14-30-00.json
-        """
-        try:
-            # Progress feedback
-            self.show_progress("Reading file")
-            self.show_progress("Detecting language")
-            self.show_progress("Analyzing sentiment")
-            
-            # Do the actual processing
-            result = self.processor.process_sentiment(file_path)
-            
-            self.show_success("Processing complete")
-            
-            # Display the sentiment analysis
-            self.display_result(result['result'], 'sentiment')
-            
-            # Save to JSON file
-            self.show_progress("Saving results")
-            output_path = OutputManager.save_from_processor_result(result)
-            self.show_success(f"Results saved to: {output_path}")
-            
-        except ProcessorError as e:
-            self.show_error(str(e))
-        except OutputManagerError as e:
-            self.show_error(f"Failed to save output: {str(e)}")
-        except Exception as e:
-            self.show_error(f"Unexpected error: {str(e)}")
-    
-    def run(self):
-        """
-        Main application loop - orchestrates the entire CLI experience.
-        
-        Flow:
-        1. Display welcome message
-        2. Initialize the AI processor (validates API key early)
-        3. Loop: Show menu → Get choice → Process file → Ask to continue
-        4. Exit gracefully when user chooses to quit
-        
-        This is the heart of the application that ties everything together.
-        """
-        # Display welcome banner
-        self.print_welcome()
-        
-        # Initialize processor (this validates API key)
-        # We do this early to fail fast if the API key is missing/invalid
-        try:
-            self.show_progress("Initializing AI client")
-            self.processor = TextProcessor()
-            self.show_success("Ready")
-        except ProcessorError as e:
-            # API key missing or invalid - show helpful error
-            self.show_error(str(e))
-            print(f"\n{Colors.YELLOW}Please ensure your .env file is configured with a valid OPENAI_API_KEY{Colors.ENDC}")
-            sys.exit(1)
-        
-        # Main application loop
-        # Continues until user chooses to exit (option 4) or says 'n' to continue
+            self.show_error("Enter 1, 2, 3, or 4.")
+
+    def get_file_path(self) -> Optional[str]:
         while True:
-            # Show the menu of available operations
+            value = input(
+                f"{Colors.BOLD}  Source file "
+                f"{Colors.CYAN}[.txt or .pdf]{Colors.RESET}{Colors.BOLD}: "
+                f"{Colors.RESET}"
+            ).strip()
+
+            if not value:
+                self.show_error("A file path is required.")
+                continue
+
+            path = Path(value).expanduser()
+            if not path.exists():
+                self.show_error(f"File not found: {path}")
+            elif not path.is_file():
+                self.show_error(f"Path is not a file: {path}")
+            elif path.suffix.lower() not in {".txt", ".pdf"}:
+                self.show_error(
+                    f"Unsupported format '{path.suffix or 'none'}'; use .txt or .pdf."
+                )
+            else:
+                return str(path)
+
+            retry = input(
+                f"{Colors.DIM}  Try another path? [Y/n]: {Colors.RESET}"
+            ).strip().lower()
+            if retry == "n":
+                return None
+
+    def get_target_language(self) -> Optional[str]:
+        language = input(
+            f"{Colors.BOLD}  Target language "
+            f"{Colors.CYAN}[e.g. Spanish]{Colors.RESET}{Colors.BOLD}: "
+            f"{Colors.RESET}"
+        ).strip()
+        if not language:
+            self.show_error("A target language is required.")
+            return None
+        return language
+
+    def display_input(
+        self,
+        action: Dict[str, str],
+        file_path: str,
+        target_language: Optional[str] = None,
+    ) -> None:
+        path = Path(file_path)
+        self._section("REQUEST", "INPUT")
+        self._field("Workflow", action["name"])
+        self._field("Source", self._display_path(path))
+        self._field("Format", path.suffix[1:].upper())
+        self._field("File size", self._format_size(path.stat().st_size))
+        if target_language:
+            self._field("Target", target_language)
+        print()
+
+    def display_result(self, result: dict, output_path: str) -> None:
+        use_case = result["use_case"]
+        output = result["result"]
+
+        self._section("RESULT", "OUTPUT")
+        self._field("Source", result["filename"])
+        self._field("Language", result["language_detected"])
+        self._field("Words processed", f"{result['word_count']:,}")
+        self._field("Saved to", output_path)
+        print()
+
+        if use_case == "summarize":
+            self._subheading("SUMMARY")
+            self._wrapped(output["summary"])
+            print()
+            self._subheading("KEY POINTS")
+            for index, point in enumerate(output["key_points"], 1):
+                self._wrapped(str(point), prefix=f"  {index}. ")
+
+        elif use_case == "translate":
+            self._field("Translation", f"{output.get('source_language', 'N/A')} → "
+                        f"{output['target_language']}")
+            print()
+            self._subheading("TRANSLATED TEXT")
+            self._wrapped(output["translated_text"])
+
+        elif use_case == "sentiment":
+            sentiment = str(output["sentiment"]).lower()
+            sentiment_color = {
+                "positive": Colors.GREEN,
+                "negative": Colors.RED,
+                "neutral": Colors.YELLOW,
+            }.get(sentiment, Colors.WHITE)
+            self._field(
+                "Sentiment",
+                f"{sentiment_color}{Colors.BOLD}{sentiment.upper()}{Colors.RESET}",
+            )
+            self._field("Confidence", f"{float(output['confidence']):.1%}")
+            print()
+            self._subheading("ANALYSIS")
+            self._wrapped(output["explanation"])
+
+        print(f"\n{Colors.GREEN}{'─' * self.WIDTH}{Colors.RESET}")
+        print(
+            f"{Colors.GREEN}{Colors.BOLD}✓ COMPLETE{Colors.RESET}  "
+            f"The result is ready and the JSON output has been saved.\n"
+        )
+
+    def execute_workflow(
+        self,
+        file_path: str,
+        operation: Callable[[Callable[[str], None]], dict],
+    ) -> None:
+        progress = StageProgress(total=4)
+        self._section("PROCESSING", "LIVE")
+
+        try:
+            result = operation(progress.update)
+            progress.update("Saving structured JSON output")
+            output_path = OutputManager.save_from_processor_result(result)
+            progress.finish()
+            self.display_result(result, output_path)
+        except ProcessorError as exc:
+            progress.fail()
+            self.show_error(str(exc))
+        except OutputManagerError as exc:
+            progress.fail()
+            self.show_error(f"Could not save output: {exc}")
+        except Exception as exc:
+            progress.fail()
+            self.show_error(f"Unexpected error: {exc}")
+
+    def run(self) -> int:
+        self.print_welcome()
+
+        startup = StageProgress(total=1)
+        try:
+            startup.update("Loading secure AI configuration")
+            self.processor = TextProcessor()
+            startup.finish()
+            print(
+                f"{Colors.GREEN}{Colors.BOLD}  STATUS: READY{Colors.RESET}"
+                f"{Colors.DIM}  Secure configuration loaded{Colors.RESET}\n"
+            )
+        except ProcessorError as exc:
+            startup.fail()
+            self.show_error(str(exc))
+            print(
+                f"{Colors.YELLOW}  Add a valid OPENAI_API_KEY to .env, "
+                f"then restart the application.{Colors.RESET}\n"
+            )
+            return 1
+
+        while True:
             self.print_menu()
-            
-            # Get and validate user's menu choice (1-4)
             choice = self.get_menu_choice()
-            
-            # Handle exit option
-            if choice == '4':
-                print(f"\n{Colors.GREEN}Thank you for using AI Content Management!{Colors.ENDC}\n")
-                sys.exit(0)
-            
-            # Get file path from user (with validation)
+            if choice == "4":
+                self._goodbye()
+                return 0
+
+            action = self.ACTIONS[choice]
             print()
             file_path = self.get_file_path()
-            
-            # User cancelled file selection - go back to menu
             if file_path is None:
                 continue
-            
+
+            target_language = None
+            if action["key"] == "translate":
+                target_language = self.get_target_language()
+                if target_language is None:
+                    continue
+
+            self.display_input(action, file_path, target_language)
+
+            if action["key"] == "summarize":
+                self.execute_workflow(
+                    file_path,
+                    lambda callback: self.processor.process_summarization(
+                        file_path, callback
+                    ),
+                )
+            elif action["key"] == "translate":
+                self.execute_workflow(
+                    file_path,
+                    lambda callback: self.processor.process_translation(
+                        file_path, target_language, callback
+                    ),
+                )
+            else:
+                self.execute_workflow(
+                    file_path,
+                    lambda callback: self.processor.process_sentiment(
+                        file_path, callback
+                    ),
+                )
+
+            again = input(
+                f"{Colors.BOLD}  Process another file? "
+                f"{Colors.CYAN}[Y/n]{Colors.RESET}{Colors.BOLD}: {Colors.RESET}"
+            ).strip().lower()
+            if again == "n":
+                self._goodbye()
+                return 0
             print()
-            
-            # Route to appropriate processing workflow based on choice
-            if choice == '1':
-                self.process_summarization(file_path)
-            elif choice == '2':
-                self.process_translation(file_path)
-            elif choice == '3':
-                self.process_sentiment(file_path)
-            
-            # Ask if user wants to process another file
-            print()
-            continue_choice = input(f"{Colors.BOLD}Process another file? (y/n):{Colors.ENDC} ").strip().lower()
-            if continue_choice != 'y':
-                print(f"\n{Colors.GREEN}Thank you for using AI Content Management!{Colors.ENDC}\n")
-                break  # Exit the loop
+
+    def show_error(self, message: str) -> None:
+        print(f"\n{Colors.RED}{Colors.BOLD}  ✗ ERROR{Colors.RESET}  {message}\n")
+
+    def _section(self, title: str, badge: str) -> None:
+        print(f"{Colors.BLUE}{'─' * self.WIDTH}{Colors.RESET}")
+        print(
+            f"{Colors.BLUE}{Colors.BOLD}{title}{Colors.RESET}  "
+            f"{Colors.DIM}[{badge}]{Colors.RESET}"
+        )
+        print(f"{Colors.BLUE}{'─' * self.WIDTH}{Colors.RESET}")
+
+    def _subheading(self, title: str) -> None:
+        print(f"{Colors.CYAN}{Colors.BOLD}{title}{Colors.RESET}")
+
+    def _field(self, label: str, value: str) -> None:
+        print(
+            f"  {Colors.DIM}{label:<16}{Colors.RESET}"
+            f"{Colors.WHITE}{value}{Colors.RESET}"
+        )
+
+    def _wrapped(self, value: str, prefix: str = "  ") -> None:
+        available_width = self.WIDTH - len(prefix)
+        paragraphs = str(value).splitlines() or [""]
+        for paragraph in paragraphs:
+            print(
+                textwrap.fill(
+                    paragraph,
+                    width=available_width,
+                    initial_indent=prefix,
+                    subsequent_indent=" " * len(prefix),
+                )
+            )
+
+    @staticmethod
+    def _format_size(size: int) -> str:
+        if size < 1024:
+            return f"{size} B"
+        if size < 1024 * 1024:
+            return f"{size / 1024:.1f} KB"
+        return f"{size / (1024 * 1024):.1f} MB"
+
+    @staticmethod
+    def _display_path(path: Path) -> str:
+        resolved = path.resolve()
+        try:
+            return str(resolved.relative_to(Path.cwd()))
+        except ValueError:
+            return str(resolved)
+
+    def _goodbye(self) -> None:
+        print(
+            f"\n{Colors.MAGENTA}{Colors.BOLD}"
+            f"{'Session complete — thank you for using AI Content Management':^{self.WIDTH}}"
+            f"{Colors.RESET}\n"
+        )
 
 
-def main():
-    """
-    Application entry point with top-level error handling.
-    
-    Handles:
-    - Normal operation (create and run CLI)
-    - Keyboard interrupt (Ctrl+C) - exit gracefully
-    - Unexpected fatal errors - show error message
-    
-    This is what gets called when you run: python main.py
-    """
+def main() -> None:
     try:
-        # Create CLI instance and start the main loop
-        cli = CLI()
-        cli.run()
+        raise SystemExit(CLI().run())
     except KeyboardInterrupt:
-        # User pressed Ctrl+C - exit cleanly without stack trace
-        print(f"\n\n{Colors.YELLOW}Operation cancelled by user{Colors.ENDC}\n")
-        sys.exit(0)
-    except Exception as e:
-        # Unexpected error - show it and exit with error code
-        print(f"\n{Colors.RED}Fatal error: {str(e)}{Colors.ENDC}\n")
-        sys.exit(1)
+        print(
+            f"\n\n{Colors.YELLOW}Operation cancelled. No further work was "
+            f"performed.{Colors.RESET}\n"
+        )
+        raise SystemExit(0)
+    except Exception as exc:
+        print(f"\n{Colors.RED}Fatal error: {exc}{Colors.RESET}\n")
+        raise SystemExit(1)
 
 
-# Standard Python idiom: only run main() when script is executed directly
-# (not when imported as a module)
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

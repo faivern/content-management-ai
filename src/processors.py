@@ -11,7 +11,7 @@ This module sits between the CLI interface and the lower-level components
 Think of this as the "controller" or "orchestrator" layer in the architecture.
 """
 
-from typing import Dict, Any
+from typing import Any, Callable, Dict, Optional
 from .api_client import APIClient, APIClientError
 from .file_handler import FileHandler, FileHandlerError
 
@@ -56,7 +56,20 @@ class TextProcessor:
             # This keeps the CLI layer from needing to know about APIClientError
             raise ProcessorError(f"Failed to initialize API client: {str(e)}")
     
-    def process_summarization(self, file_path: str) -> Dict[str, Any]:
+    @staticmethod
+    def _report_stage(
+        progress_callback: Optional[Callable[[str], None]],
+        message: str
+    ) -> None:
+        """Report a workflow stage when the caller provides a callback."""
+        if progress_callback:
+            progress_callback(message)
+
+    def process_summarization(
+        self,
+        file_path: str,
+        progress_callback: Optional[Callable[[str], None]] = None
+    ) -> Dict[str, Any]:
         """
         Process a file for summarization (complete workflow).
         
@@ -91,10 +104,12 @@ class TextProcessor:
         try:
             # Step 1: Read the file content
             # Returns both content (str) and filename (for metadata)
+            self._report_stage(progress_callback, "Reading source file")
             content, filename = FileHandler.read_file(file_path)
             
             # Step 2: Detect what language the text is in
             # This happens before summarization so we can include it in metadata
+            self._report_stage(progress_callback, "Detecting source language")
             language = self.api_client.detect_language(content)
             
             # Step 3: Count words for statistics
@@ -103,6 +118,7 @@ class TextProcessor:
             
             # Step 4: Perform the actual summarization
             # Returns: {'summary': str, 'key_points': list}
+            self._report_stage(progress_callback, "Generating summary and key points")
             summary_result = self.api_client.summarize(content)
             
             # Step 5: Package everything into a structured result
@@ -125,7 +141,12 @@ class TextProcessor:
             # Unexpected error - catch-all for safety
             raise ProcessorError(f"Unexpected error during summarization: {str(e)}")
     
-    def process_translation(self, file_path: str, target_language: str) -> Dict[str, Any]:
+    def process_translation(
+        self,
+        file_path: str,
+        target_language: str,
+        progress_callback: Optional[Callable[[str], None]] = None
+    ) -> Dict[str, Any]:
         """
         Process a file for translation (complete workflow).
         
@@ -164,10 +185,12 @@ class TextProcessor:
         """
         try:
             # Step 1: Read the file content
+            self._report_stage(progress_callback, "Reading source file")
             content, filename = FileHandler.read_file(file_path)
             
             # Step 2: Detect the source language
             # This is detected separately and added to results for transparency
+            self._report_stage(progress_callback, "Detecting source language")
             source_language = self.api_client.detect_language(content)
             
             # Step 3: Count words in the original text
@@ -175,6 +198,10 @@ class TextProcessor:
             
             # Step 4: Perform the translation
             # Returns: {'translated_text': str, 'target_language': str}
+            self._report_stage(
+                progress_callback,
+                f"Translating content to {target_language}"
+            )
             translation_result = self.api_client.translate(content, target_language)
             
             # Step 5: Enhance the result by adding the detected source language
@@ -197,7 +224,11 @@ class TextProcessor:
         except Exception as e:
             raise ProcessorError(f"Unexpected error during translation: {str(e)}")
     
-    def process_sentiment(self, file_path: str) -> Dict[str, Any]:
+    def process_sentiment(
+        self,
+        file_path: str,
+        progress_callback: Optional[Callable[[str], None]] = None
+    ) -> Dict[str, Any]:
         """
         Process a file for sentiment analysis (complete workflow).
         
@@ -235,10 +266,12 @@ class TextProcessor:
         """
         try:
             # Step 1: Read the file content
+            self._report_stage(progress_callback, "Reading source file")
             content, filename = FileHandler.read_file(file_path)
             
             # Step 2: Detect the language
             # Language detection helps ensure the AI understands the text correctly
+            self._report_stage(progress_callback, "Detecting source language")
             language = self.api_client.detect_language(content)
             
             # Step 3: Count words for statistics
@@ -246,6 +279,7 @@ class TextProcessor:
             
             # Step 4: Perform sentiment analysis
             # Returns: {'sentiment': str, 'confidence': float, 'explanation': str}
+            self._report_stage(progress_callback, "Analyzing sentiment and tone")
             sentiment_result = self.api_client.analyze_sentiment(content)
             
             # Step 5: Package everything into final structure
